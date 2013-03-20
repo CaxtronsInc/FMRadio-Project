@@ -6,6 +6,9 @@
 #include <math.h>
 //#include<iostream.h>
 
+Linda
+
+
 #pragma config OSC = INTIO67   // Internal osc, RA6=CLKO, RA7=I/O
 #pragma config FCMEN = OFF  	// Fail-Safe Clock Monitor disabled 
 #pragma config IESO = OFF		// Oscillator Switchover mode disabled 
@@ -17,6 +20,8 @@
 #pragma config BORV = 3       // Brown-out voltage set for 2.0V, nominal
 #pragma config STVREN = OFF		// Stack full/underflow will not cause Reset
 //#pragma config CP0 = OFF, CP1 = OFF, CP2 = OFF, CP3 = OFF 			// Program memory block not code-protected 
+
+
 
 //*******************************************************************************************
 //*******************************************************************************************
