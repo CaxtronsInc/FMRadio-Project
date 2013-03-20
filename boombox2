@@ -6,9 +6,6 @@
 #include <math.h>
 //#include<iostream.h>
 
-Linda
-
-
 #pragma config OSC = INTIO67   // Internal osc, RA6=CLKO, RA7=I/O
 #pragma config FCMEN = OFF  	// Fail-Safe Clock Monitor disabled 
 #pragma config IESO = OFF		// Oscillator Switchover mode disabled 
