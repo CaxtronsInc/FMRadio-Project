@@ -1,4 +1,4 @@
-#include <p18f4520.h>
+#include <p18f6490.h>
 #include <i2c.h>
 #include "fm.h"
 #include <delays.h>
@@ -6,9 +6,8 @@
 #include <math.h>
 //#include<iostream.h>
 
-
 #pragma config OSC = INTIO67   // Internal osc, RA6=CLKO, RA7=I/O
-#pragma config FCMEN = OFF  	// Fail-Safe Clock Monitor disabled 
+#pragma config FCMEN = OFF		// Fail-Safe Clock Monitor disabled 
 #pragma config IESO = OFF		// Oscillator Switchover mode disabled 
 #pragma config WDT = OFF        // WDT disabled (control through SWDTEN bit)
 #pragma config PWRT = OFF       // racmod  -> PWRT disabled
@@ -19,8 +18,6 @@
 #pragma config STVREN = OFF		// Stack full/underflow will not cause Reset
 //#pragma config CP0 = OFF, CP1 = OFF, CP2 = OFF, CP3 = OFF 			// Program memory block not code-protected 
 
-
-
 //*******************************************************************************************
 //*******************************************************************************************
 unsigned int mute_test=0; 
@@ -29,6 +26,10 @@ void vol_minus(void);
 void vol_add(void);
 unsigned char FMfrequenc(unsigned int f);
 unsigned char FMchan(unsigned int *chn);
+unsigned char LCD_SEG_BOOL = 0;
+int LCD_SEG_DISP;
+unsigned char LCD_SEG_ONE;
+int LCD_SEG_DEC;
 // FM register bank defaults -
 rom unsigned int regDflt[18] = {
 	0xFFFF,     // R0 -- the first writable register .  (disable xo_en)   
@@ -50,7 +51,8 @@ rom unsigned int regDflt[18] = {
 	0x04A1,     // R16   
 	0xDF6A      // R17
 };
-unsigned int fave_stations[] = {875, 881, 903, 964, 1046, 1129};
+
+unsigned int fave_stations[] = {875, 881, 903, 964, 1046, 1080};
 
 rom unsigned char vol[19]={
 	0x0F, 0xCF, 0xDF, 0xFF,  0xCB, 0xDB, 0xFB, 0xFA,
@@ -58,30 +60,67 @@ rom unsigned char vol[19]={
 	0xF2, 0xF1, 0xF0
 };
 
+rom unsigned char digit[11]={0xFC,0x60,0xDA,0xF2,0x66,0xB6,0xBE,0xE0,0xFE,0xF6,0x00};
 
 #pragma code
+
 
 void check_buttons(void) 
 { 
 	
     unsigned int bounce_count = 0;
 	unsigned int volChange=0;
-	unsigned int rotA=PORTDbits.RD0;
-	unsigned int rotB=PORTDbits.RD1;
+	unsigned int rotA=CTRL_ROTA;
+	unsigned int rotB=CTRL_ROTB;
 	unsigned char print_text[]="  Manual Tune   ";
 	unsigned char txt_NowPlaying[]="  Now Playing:  ";
 	float hold_count = 0;
+	unsigned int new_chan; 
+
 
 	while(volChange==0){ 
+
+		if (PIR1bits.TMR1IF)
+		{
+			if (LCD_SEG_BOOL)
+			{
+				LCDdisplay (LCD_SEG_DISP, LCD_SEG_DEC);
+				LCD_SEG_BOOL = 0;
+			}
+			else
+			{
+				SEG_DEC = 0;
+				SEG_ONE = 0;
+				serial(digit[10], digit[10], digit[10]);
+				LCD_SEG_BOOL = 1;
+			}
+			PIR1bits.TMR1IF = 0;
+			TMR1H = 0b10000000;                      // Clear timer count
+   		 	TMR1L = 0;
+		}
+
+
+		if (rotA!=CTRL_ROTA)
+		{
+			(vi += RotChange(rotA,&volChange));
+			LCDdisplay (LCD_SEG_DISP, LCD_SEG_DEC);
+			volume();
+		}  
+
+
 //************************************************************************************************  
 	    do
 		{ 
-	        if (ASk_SSK_down) bounce_count++;                          // pressed state detected 
-	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+	        if (ASk_SSK_down) 			
+			{
+				bounce_count++;                          // pressed state detected 
+	        	Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+			}                                        // delay 250 cycles or 1ms. 
 	    } while ((bounce_count < DetectsInARow) && ASk_SSK_down);  
 	  
 	    if (ASk_SSK_down && (bounce_count == DetectsInARow))
 	    { 
+			LCDdisplay (LCD_SEG_DISP, LCD_SEG_DEC);
 			TMR0H = 0;                      // Clear timer count
    		 	TMR0L = 0;
 			INTCONbits.TMR0IF = 0;          // Reset Timer flag
@@ -133,12 +172,16 @@ void check_buttons(void)
 	  
 	    do
 		{ 
-	        if (ASk_SSK_up) bounce_count++;                          // pressed state detected 
-	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+	        if (ASk_SSK_up) 
+			{
+				bounce_count++;                          // pressed state detected 
+	        	Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+			}
 	    } while ((bounce_count < DetectsInARow) && ASk_SSK_up);  
 	  
 	    if (ASk_SSK_up && (bounce_count == DetectsInARow))
 	    { 
+			LCDdisplay (LCD_SEG_DISP, LCD_SEG_DEC);
 			TMR0H = 0;                      // Clear timer count
    		 	TMR0L = 0;
 			INTCONbits.TMR0IF = 0;          // Reset Timer flag
@@ -185,266 +228,245 @@ void check_buttons(void)
 	//**************************************************************************************************
 	
 	//**************************************************************************************************
-		bounce_count = 0; 
+
+
+	//**************************************************************************************************
+		if (CTRL_MUTE)
+		{
+			mute();
+		}
+
+
+		if (INTCONbits.TMR0IF == 1)
+		{
+			tune_type = 0;
+			print_to_screen(txt_NowPlaying,1);
+
+			FMchan(&new_chan);
+			new_chan += 690;
+			LCD_SEG_DISP = new_chan;
+			LCD_SEG_DEC = 1;
+			INTCONbits.TMR0IF = 0;          // Clear timer flag
+		}
+	//**************************************************************************************************
 	
-	        if (rotA!=PORTDbits.RD0){(vi += RotChange(rotA,&volChange));volume();}  
 	//**************************************************************************************************
-	 bounce_count = 0; 
-	    if (PORTBbits.RB2){mute();}
-	//**************************************************************************************************
-	
-	//**************************************************************************************************
-	    bounce_count = 0; 
-	  
-	    do{ 
-	        if (PRESET_1) bounce_count++;                          // pressed state detected 
-	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
-	    }   while ((bounce_count < DetectsInARow) && PRESET_1);  
-	  
-	    if (PRESET_1 && (bounce_count == DetectsInARow))  
-	    { 
-	        hold_count = 0; 
-	    	do{
-	        	if (PRESET_1) hold_count++; 
-	        	Delay10TCYx(50); 
-	      	} while ((hold_count < 2000) && PRESET_1); 
-	  
-	        if (hold_count == 2000) 
-	        { 
-	          	set_fave(0);
-				print_to_screen(txt_Fav1,1);
-				fqout(); 
-	          	regImg[1] = regImg[1] | 0b0000000000000010; 
-	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
-	          	Delay10KTCYx(200); 
-	          	regImg[1] = regImg[1] & 0b1111111111111101;
-	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
-	        } 
-	        else
-	        { 
-	            load_fave(0);
-				print_to_screen(txt_Fav_curr1,1);
-			
-	        } 
-	 
-	        while (PRESET_1); 
-	    }  
-		if (INTCONbits.TMR0IF == 1)
-		{
-			tune_type = 0;
-			print_to_screen(txt_NowPlaying,1);
-			INTCONbits.TMR0IF = 0;          // Clear timer flag
-		}
-//********************************************************************************************************
-			    bounce_count = 0; 
-	  
-	    do{ 
-	        if (PRESET_2) bounce_count++;                          // pressed state detected 
-	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
-	    }   while ((bounce_count < DetectsInARow) && PRESET_2);  
-	  
-	    if (PRESET_2 && (bounce_count == DetectsInARow))  
-	    { 
-	        hold_count = 0; 
-	    	do{
-	        	if (PRESET_2) hold_count++; 
-	        	Delay10TCYx(50); 
-	      	} while ((hold_count < 2000) && PRESET_2); 
-	  
-	        if (hold_count == 2000) 
-	        { 
-	          	set_fave(1);
-				print_to_screen(txt_Fav2,1);
-				fqout(); 
-	          	regImg[1] = regImg[1] | 0b0000000000000010; 
-	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
-	          	Delay10KTCYx(200); 
-	          	regImg[1] = regImg[1] & 0b1111111111111101;
-	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
-	        } 
-	        else
-	        { 
-	            load_fave(1);
-				print_to_screen(txt_Fav_curr2,1);
-			
-	        } 
-	 
-	        while (PRESET_2); 
-	    }  
-		if (INTCONbits.TMR0IF == 1)
-		{
-			tune_type = 0;
-			print_to_screen(txt_NowPlaying,1);
-			INTCONbits.TMR0IF = 0;          // Clear timer flag
-		}
-//***************************************************************************************************************
-			    bounce_count = 0; 
-	  
-	    do{ 
-	        if (PRESET_3) bounce_count++;                          // pressed state detected 
-	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
-	    }   while ((bounce_count < DetectsInARow) && PRESET_3);  
-	  
-	    if (PRESET_3 && (bounce_count == DetectsInARow))  
-	    { 
-	        hold_count = 0; 
-	    	do{
-	        	if (PRESET_3) hold_count++; 
-	        	Delay10TCYx(50); 
-	      	} while ((hold_count < 2000) && PRESET_3); 
-	  
-	        if (hold_count == 2000) 
-	        { 
-	          	set_fave(2);
-				print_to_screen(txt_Fav3,1);
-				fqout(); 
-	          	regImg[1] = regImg[1] | 0b0000000000000010; 
-	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
-	          	Delay10KTCYx(200); 
-	          	regImg[1] = regImg[1] & 0b1111111111111101;
-	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
-	        } 
-	        else
-	        { 
-	            load_fave(2);
-				print_to_screen(txt_Fav_curr3,1);
-			
-	        } 
-	 
-	        while (PRESET_3); 
-	    }  
-		if (INTCONbits.TMR0IF == 1)
-		{
-			tune_type = 0;
-			print_to_screen(txt_NowPlaying,1);
-			INTCONbits.TMR0IF = 0;          // Clear timer flag
-		}
-//******************************************************************************************************
-				    bounce_count = 0; 
-	  
-	    do{ 
-	        if (PRESET_4) bounce_count++;                          // pressed state detected 
-	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
-	    }   while ((bounce_count < DetectsInARow) && PRESET_4);  
-	  
-	    if (PRESET_4 && (bounce_count == DetectsInARow))  
-	    { 
-	        hold_count = 0; 
-	    	do{
-	        	if (PRESET_4) hold_count++; 
-	        	Delay10TCYx(50); 
-	      	} while ((hold_count < 2000) && PRESET_4); 
-	  
-	        if (hold_count == 2000) 
-	        { 
-	          	set_fave(3);
-				print_to_screen(txt_Fav4,1);
-				fqout(); 
-	          	regImg[1] = regImg[1] | 0b0000000000000010; 
-	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
-	          	Delay10KTCYx(200); 
-	          	regImg[1] = regImg[1] & 0b1111111111111101;
-	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
-	        } 
-	        else
-	        { 
-	            load_fave(3);
-				print_to_screen(txt_Fav_curr4,1);
-			
-	        } 
-	 
-	        while (PRESET_4); 
-	    }  
-		if (INTCONbits.TMR0IF == 1)
-		{
-			tune_type = 0;
-			print_to_screen(txt_NowPlaying,1);
-			INTCONbits.TMR0IF = 0;          // Clear timer flag
-		}
-//********************************************************************************************************
-			    bounce_count = 0; 
-	  
-	    do{ 
-	        if ( PRESET_5) bounce_count++;                          // pressed state detected 
-	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
-	    }   while ((bounce_count < DetectsInARow) &&  PRESET_5);  
-	  
-	    if ( PRESET_5 && (bounce_count == DetectsInARow))  
-	    { 
-	        hold_count = 0; 
-	    	do{
-	        	if ( PRESET_5) hold_count++; 
-	        	Delay10TCYx(50); 
-	      	} while ((hold_count < 2000) &&  PRESET_5); 
-	  
-	        if (hold_count == 2000) 
-	        { 
-	          	set_fave(4);
-				print_to_screen(txt_Fav5,1);
-				fqout(); 
-	          	regImg[1] = regImg[1] | 0b0000000000000010; 
-	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
-	          	Delay10KTCYx(200); 
-	          	regImg[1] = regImg[1] & 0b1111111111111101;
-	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
-	        } 
-	        else
-	        { 
-	            load_fave(4);
-				print_to_screen(txt_Fav_curr5,1);
-			
-	        } 
-	 
-	        while ( PRESET_5); 
-	    }  
-		if (INTCONbits.TMR0IF == 1)
-		{
-			tune_type = 0;
-			print_to_screen(txt_NowPlaying,1);
-			INTCONbits.TMR0IF = 0;          // Clear timer flag
-		}
-//*******************************************************************************************************
-	 bounce_count = 0; 
-	  
-	    do{ 
-	        if ( PRESET_6) bounce_count++;                          // pressed state detected 
-	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
-	    }   while ((bounce_count < DetectsInARow) &&  PRESET_6);  
-	  
-	    if ( PRESET_5 && (bounce_count == DetectsInARow))  
-	    { 
-	        hold_count = 0; 
-	    	do{
-	        	if ( PRESET_6) hold_count++; 
-	        	Delay10TCYx(50); 
-	      	} while ((hold_count < 2000) &&  PRESET_6); 
-	  
-	        if (hold_count == 2000) 
-	        { 
-	          	set_fave(5);
-				print_to_screen(txt_Fav6,1);
-				fqout(); 
-	          	regImg[1] = regImg[1] | 0b0000000000000010; 
-	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
-	          	Delay10KTCYx(200); 
-	          	regImg[1] = regImg[1] & 0b1111111111111101;
-	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
-	        } 
-	        else
-	        { 
-	            load_fave(5);
-				print_to_screen(txt_Fav_curr6,1);
-			
-	        } 
-	 
-	        while ( PRESET_6); 
-	    }  
-		if (INTCONbits.TMR0IF == 1)
-		{
-			tune_type = 0;
-			print_to_screen(txt_NowPlaying,1);
-			INTCONbits.TMR0IF = 0;          // Clear timer flag
-		}
+//	    bounce_count = 0; 
+//	  
+//	    do{ 
+//	        if (PRESET_1) bounce_count++;                          // pressed state detected 
+//	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+//	    }   while ((bounce_count < DetectsInARow) && PRESET_1);  
+//	  
+//	    if (PRESET_1 && (bounce_count == DetectsInARow))  
+//	    { 
+//	        hold_count = 0; 
+//	    	do{
+//	        	if (PRESET_1) hold_count++; 
+//	        	Delay10TCYx(50); 
+//	      	} while ((hold_count < 2000) && PRESET_1); 
+//	  
+//	        if (hold_count == 2000) 
+//	        { 
+//	          	set_fave(0);
+//				print_to_screen(txt_Fav1,1);
+//				fqout(); 
+//	          	regImg[1] = regImg[1] | 0b0000000000000010; 
+//	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
+//	          	Delay10KTCYx(200); 
+//	          	regImg[1] = regImg[1] & 0b1111111111111101;
+//	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
+//	        } 
+//	        else
+//	        { 
+//	            load_fave(0);
+//				print_to_screen(txt_Fav_curr1,1);
+//			
+//	        } 
+//	 
+//	        while (PRESET_1); 
+//	    }  
+
+////********************************************************************************************************
+//			    bounce_count = 0; 
+//	  
+//	    do{ 
+//	        if (PRESET_2) bounce_count++;                          // pressed state detected 
+//	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+//	    }   while ((bounce_count < DetectsInARow) && PRESET_2);  
+//	  
+//	    if (PRESET_2 && (bounce_count == DetectsInARow))  
+//	    { 
+//	        hold_count = 0; 
+//	    	do{
+//	        	if (PRESET_2) hold_count++; 
+//	        	Delay10TCYx(50); 
+//	      	} while ((hold_count < 2000) && PRESET_2); 
+//	  
+//	        if (hold_count == 2000) 
+//	        { 
+//	          	set_fave(1);
+//				print_to_screen(txt_Fav2,1);
+//				fqout(); 
+//	          	regImg[1] = regImg[1] | 0b0000000000000010; 
+//	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
+//	          	Delay10KTCYx(200); 
+//	          	regImg[1] = regImg[1] & 0b1111111111111101;
+//	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
+//	        } 
+//	        else
+//	        { 
+//	            load_fave(1);
+//				print_to_screen(txt_Fav_curr2,1);
+//			
+//	        } 
+//	 
+//	        while (PRESET_2); 
+//	    }  
+////***************************************************************************************************************
+//			    bounce_count = 0; 
+//	  
+//	    do{ 
+//	        if (PRESET_3) bounce_count++;                          // pressed state detected 
+//	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+//	    }   while ((bounce_count < DetectsInARow) && PRESET_3);  
+//	  
+//	    if (PRESET_3 && (bounce_count == DetectsInARow))  
+//	    { 
+//	        hold_count = 0; 
+//	    	do{
+//	        	if (PRESET_3) hold_count++; 
+//	        	Delay10TCYx(50); 
+//	      	} while ((hold_count < 2000) && PRESET_3); 
+//	  
+//	        if (hold_count == 2000) 
+//	        { 
+//	          	set_fave(2);
+//				print_to_screen(txt_Fav3,1);
+//				fqout(); 
+//	          	regImg[1] = regImg[1] | 0b0000000000000010; 
+//	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
+//	          	Delay10KTCYx(200); 
+//	          	regImg[1] = regImg[1] & 0b1111111111111101;
+//	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
+//	        } 
+//	        else
+//	        { 
+//	            load_fave(2);
+//				print_to_screen(txt_Fav_curr3,1);
+//			
+//	        } 
+//	 
+//	        while (PRESET_3); 
+//	    }  
+////******************************************************************************************************
+//		bounce_count = 0; 
+//	  
+//	    do{ 
+//	        if (PRESET_4) bounce_count++;                          // pressed state detected 
+//	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+//	    }   while ((bounce_count < DetectsInARow) && PRESET_4);  
+//	  
+//	    if (PRESET_4 && (bounce_count == DetectsInARow))  
+//	    { 
+//	        hold_count = 0; 
+//	    	do{
+//	        	if (PRESET_4) hold_count++; 
+//	        	Delay10TCYx(50); 
+//	      	} while ((hold_count < 2000) && PRESET_4); 
+//	  
+//	        if (hold_count == 2000) 
+//	        { 
+//	          	set_fave(3);
+//				print_to_screen(txt_Fav4,1);
+//				fqout(); 
+//	          	regImg[1] = regImg[1] | 0b0000000000000010; 
+//	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
+//	          	Delay10KTCYx(200); 
+//	          	regImg[1] = regImg[1] & 0b1111111111111101;
+//	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
+//	        } 
+//	        else
+//	        { 
+//	            load_fave(3);
+//				print_to_screen(txt_Fav_curr4,1);
+//			
+//	        } 
+//	 
+//	        while (PRESET_4); 
+//	    }  
+////********************************************************************************************************
+//		bounce_count = 0; 
+//	  
+//	    do{ 
+//	        if ( PRESET_5) bounce_count++;                          // pressed state detected 
+//	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+//	    }   while ((bounce_count < DetectsInARow) &&  PRESET_5);  
+//	  
+//	    if ( PRESET_5 && (bounce_count == DetectsInARow))  
+//	    { 
+//	        hold_count = 0; 
+//	    	do{
+//	        	if ( PRESET_5) hold_count++; 
+//	        	Delay10TCYx(50); 
+//	      	} while ((hold_count < 2000) &&  PRESET_5); 
+//	  
+//	        if (hold_count == 2000) 
+//	        { 
+//	          	set_fave(4);
+//				print_to_screen(txt_Fav5,1);
+//				fqout(); 
+//	          	regImg[1] = regImg[1] | 0b0000000000000010; 
+//	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
+//	          	Delay10KTCYx(200); 
+//	          	regImg[1] = regImg[1] & 0b1111111111111101;
+//	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
+//	        } 
+//	        else
+//	        { 
+//	            load_fave(4);
+//				print_to_screen(txt_Fav_curr5,1);
+//			
+//	        } 
+//	 
+//	        while ( PRESET_5); 
+//	    }  
+////*******************************************************************************************************
+//		bounce_count = 0; 
+//	  
+//	    do{ 
+//	        if (PRESET_6) bounce_count++;                          // pressed state detected 
+//	        Delay10TCYx(25);                                            // delay 250 cycles or 1ms. 
+//	    }   while ((bounce_count < DetectsInARow) && PRESET_6);  
+//	  
+//	    if (PRESET_6 && (bounce_count == DetectsInARow))  
+//	    { 
+//	        hold_count = 0; 
+//	    	do{
+//	        	if (PRESET_6) hold_count++; 
+//	        	Delay10TCYx(50); 
+//	      	} while ((hold_count < 2000) && PRESET_6); 
+//	  
+//	        if (hold_count == 2000) 
+//	        { 
+//	          	set_fave(5);
+//				print_to_screen(txt_Fav4,1);
+//				fqout(); 
+//	          	regImg[1] = regImg[1] | 0b0000000000000010; 
+//	          	if (FMwrite(1) != XS) return XF;                //Set MUTE bit 
+//	          	Delay10KTCYx(200); 
+//	          	regImg[1] = regImg[1] & 0b1111111111111101;
+//	        	if (FMwrite(1) != XS) return XF;                //Clear MUTE bit 
+//	        } 
+//	        else
+//	        { 
+//	            load_fave(5);
+//				print_to_screen(txt_Fav_curr4,1);
+//			
+//	        } 
+//	 
+//	        while (PRESET_6); 
+//	    }  
 	}  
 	
     return; 
@@ -473,42 +495,41 @@ void Tune_Up(unsigned int up)
     else if (tune_type == 1)
 	{
 		nextChan(up);
+		Delay_ms(100);
 	}
 } 
 
 void mute (void)
-{	unsigned char data6[]="     MUTED.     ";
+{	unsigned char data6[]="     Muted     ";
 	if(mute_test==0){
 	regImg[1] = regImg[1] | 0b0000000000000010;  //Set MUTE bit 
 	if (FMwrite(1) != XS) return XF;mute_test=1;
 	i=0;line(0xd0);
-	while(data6[i]!='\0'){dis_data(data6[i]);Delay_ms(50);i++;}} 
+	while(data6[i]!='\0'){dis_data(data6[i]);i++;}} 
 	else{
 	if(mute_test==1)
 	regImg[1] = regImg[1] & 0b1111111111111101;//Clear MUTE bit
 	if (FMwrite(1) != XS) return XF;mute_test=0;volume();}
 	 
-	while (PORTBbits.RB2);           
+	while (CTRL_MUTE);           
 }
 
 int RotChange(unsigned int rotA, unsigned int *volChange)
 {
-
-	if(PORTDbits.RD0>rotA&&PORTDbits.RD1==1){
+	if(CTRL_ROTA > rotA && CTRL_ROTB==1){
 	*volChange=1;if(vi>0){ return -1;}else{return 0;}
 	}
-	if(PORTDbits.RD0<rotA&&PORTDbits.RD1==1){
+	if(CTRL_ROTA < rotA && CTRL_ROTB==1){
 	*volChange=1;if(vi<18){ return 1;}else{return 0;}	
 	}
-	if(PORTDbits.RD0 < rotA && PORTDbits.RD1==0){
+	if(CTRL_ROTA < rotA && CTRL_ROTB==0){
 	*volChange=1;if(vi>0){ return -1;}else{return 0;}	
 	}
-	if(PORTDbits.RD0 > rotA && PORTDbits.RD1==0){
+	if(CTRL_ROTA > rotA && CTRL_ROTB==0){
 	*volChange=1;if(vi<18){ return 1;}else{return 0;}
 	}	
 	return 0;		
 }
-
 unsigned char nextChan(unsigned char up) {
 
 	unsigned int chn;
@@ -547,17 +568,22 @@ void Init() {
 	//LCDSE3 = 0b00000000;        	// Disable LCD segments 31-24
 	//LCDCON = 0b10001000;         	// Enab LC controller. Static mode. INTRC clock
 	//LCDPS  = 0b00110110;         	// 37 Hz frame frequency
+	
 	ADCON1 = 0b00111111;        	// Make all ADC/IO pins digital
-	TRISA = 0b00000011;             // RA0 and RA1 pbutton
-	TRISB = 0b00100111;				// RB0 and RB5 pbutton
-	TRISC = 0b00000000;				// RC3 and RC4 do the I2C bus
-	LATC = 0;
-	TRISC = 0b11011000;				// RC3 and RC4 do the I2C bus
-	TRISD = 0b00000011;				
-	//TRISG = 0b11111111;				// RG0, RG1 & RG3 pbutton
+	CMCON = 0x07;
+	TRISA = 0b00000010;             // RA0 and RA1 pbutton
+	TRISB = 0b00110111;				// RB0 and RB5 pbutton
+	TRISC = 0b01011000;				// RC3 and RC4 do the I2C bus
+	TRISD = 0b00000000;				
+	TRISE = 0b00000000;				
+	TRISF = 0b11111110;
+	TRISG = 0b11111111;				// RG0, RG1 & RG3 pbutton
 	PORTA = 0;
 	PORTB = 0;
 	PORTC = 0;
+	PORTF = 0;
+	LATC = 0;
+
     INTCONbits.TMR0IF = 0;          // Clear timer flag
 	T0CON = 0b00000110;				// Prescale by 128
     //T0CON = 0b00001000;             // No prescale
@@ -890,7 +916,8 @@ unsigned char FMfrequenc(unsigned int f) {
 		if (FMready(&dat) != XS) return XF;
  	} while (!dat);
 	fqout();
-	
+	LCD_SEG_DISP = f;
+	LCD_SEG_DEC = 1;
 //	return showFreq();
 }
 // end FMfrequenc ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1000,6 +1027,13 @@ void volume() {
 	FMwrite(14);
 	vol_cnt(vi);
 	fqout();
+	LCD_SEG_DISP = vi;
+	LCD_SEG_DEC = 0;
+
+	TMR0H = 0;                      // Clear timer count
+	TMR0L = 0;
+	INTCONbits.TMR0IF = 0;          // Reset Timer flag
+	T0CONbits.TMR0ON = 1;           // Start timer
 }
 // end volume ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1041,23 +1075,24 @@ void Name_s(void)
 	unsigned char data1[]="    Boombox.    ";
 	unsigned char data2[]="By Austin,Graham";
 	unsigned char data3[]=" Jamie, Yiannos ";
-	unsigned char data4[]="  Now Playing: ";
-	unsigned char data5[]="  Volume/Mute:  ";
+	unsigned char data4[]="  Now Playing:  ";
+	unsigned char data5[]="    Volume:     ";
 	
-	cleardt();Delay_ms(10);i=0;
-	while(data0[i]!='\0'){dis_data(data0[i]);Delay_ms(50);i++;}	
-	 i=0;line(0xc0);
-	while(data1[i]!='\0'){dis_data(data1[i]);Delay_ms(50);i++;}
+//	cleardt();Delay_ms(10);i=0;
+//	while(data0[i]!='\0'){dis_data(data0[i]);Delay_ms(30);i++;}	
+//	 i=0;line(0xc0);
+//	while(data1[i]!='\0'){dis_data(data1[i]);Delay_ms(30);i++;}
+//	 i=0;line(0x90);
+//	while(data2[i]!='\0'){dis_data(data2[i]);Delay_ms(30);i++;}
+//	 i=0;line(0xd0);
+//	while(data3[i]!='\0'){dis_data(data3[i]);Delay_ms(30);i++;}
+//	Delay_ms(3000);i=0;
+//	while(i<85){dis_data(0x20);Delay_ms(30);i++;}	
+//	cleardt();
+	i=0;
+	while(data4[i]!='\0'){dis_data(data4[i]);Delay_ms(1);i++;}
 	 i=0;line(0x90);
-	while(data2[i]!='\0'){dis_data(data2[i]);Delay_ms(50);i++;}
-	 i=0;line(0xd0);
-	while(data3[i]!='\0'){dis_data(data3[i]);Delay_ms(50);i++;}
-	Delay_ms(3000);i=0;
-	while(i<85){dis_data(0x20);Delay_ms(50);i++;}	
-	cleardt();i=0;
-	while(data4[i]!='\0'){dis_data(data4[i]);Delay_ms(50);i++;}
-	 i=0;line(0x90);
-	while(data5[i]!='\0'){dis_data(data5[i]);Delay_ms(50);i++;}		
+	while(data5[i]!='\0'){dis_data(data5[i]);Delay_ms(1);i++;}		
 }
 
 void lcd_ini(void)	                    
@@ -1077,16 +1112,34 @@ void dis_cmd(unsigned char cmd_value)
 void dis_data(unsigned char data_value)
 {
 	unsigned char data_value1;
-	data_value1=(data_value&0xF0);lcddata(data_value1);
-	data_value1=((data_value<<4)&0xF0);lcddata(data_value1);	
+	data_value1=(data_value&0xF0);
+	lcddata(data_value1);
+	data_value1=((data_value<<4)&0xF0);
+	lcddata(data_value1);	
 }
 void lcdcmd(unsigned char cmdout)
 {
-	lcdport=cmdout;rs=0;en=1;Delay_ms(1);en=0;			
+	lcd_data1 = ((cmdout>>4)&0x01);
+	lcd_data2 = ((cmdout>>5)&0x01);
+	lcd_data3 = ((cmdout>>6)&0x01);
+	lcd_data4 = ((cmdout>>7)&0x01);
+	rs=0;
+	en=1;
+	Delay10TCYx(1);
+	//Delay_ms(1);
+	en=0;			
 }
 void lcddata(unsigned char dataout)
 {
-	lcdport=dataout;rs=1;en=1;Delay_ms(1);en=0;		
+	lcd_data1 = ((dataout>>4)&0x01);
+	lcd_data2 = ((dataout>>5)&0x01);
+	lcd_data3 = ((dataout>>6)&0x01);
+	lcd_data4 = ((dataout>>7)&0x01);
+	rs=1;
+	en=1;
+	Delay10TCYx(1);
+	//Delay_ms(1);
+	en=0;		
 }
 void cleardt(void)
 {
@@ -1162,41 +1215,73 @@ void fqout(void)
 	unsigned char buf  = temp0 + '0';
     buf0 = temp;
 	//unsigned char 
-	if(parameter==0){
-	i=0;line(0xc0);spc(5);
-	while(i<1){dis_data(buf0);i++;}
-	i=0;line(0xc0);spc(6);
-	while(i<1){dis_data(buf2);i++;}
-	i=0;line(0xc0);spc(7);
-	while(i<1){dis_data(buf1);i++;}
-	i=0;line(0xc0);spc(8);
-	while(i<1){dis_data(0x2E);i++;}
-	i=0;line(0xc0);spc(9);
-	while(i<1){dis_data(buf);i++;}
+	if(parameter==0)
+	{
+		i=0;line(0xc0);spc(5);
+		while(i<1){dis_data(buf0);i++;}
+		i=0;line(0xc0);spc(6);
+		while(i<1){dis_data(buf2);i++;}
+		i=0;line(0xc0);spc(7);
+		while(i<1){dis_data(buf1);i++;}
+		i=0;line(0xc0);spc(8);
+		while(i<1){dis_data(0x2E);i++;}
+		i=0;line(0xc0);spc(9);
+		while(i<1){dis_data(buf);i++;}
 	}
-	if(parameter==1){
-	i=0;line(0xc0);spc(5);
-	while(i<1){dis_data(buf3);i++;}
-	i=0;line(0xc0);spc(6);
-	while(i<1){dis_data(buf2);i++;}
-	i=0;line(0xc0);spc(7);
-	while(i<1){dis_data(buf1);i++;}
-	i=0;line(0xc0);spc(8);
-	while(i<1){dis_data(0x2E);i++;}
-	i=0;line(0xc0);spc(9);
-	while(i<1){dis_data(buf);i++;}
+	if(parameter==1)
+	{
+		i=0;line(0xc0);spc(5);
+		while(i<1){dis_data(buf3);i++;}
+		i=0;line(0xc0);spc(6);
+		while(i<1){dis_data(buf2);i++;}
+		i=0;line(0xc0);spc(7);
+		while(i<1){dis_data(buf1);i++;}
+		i=0;line(0xc0);spc(8);
+		while(i<1){dis_data(0x2E);i++;}
+		i=0;line(0xc0);spc(9);
+		while(i<1){dis_data(buf);i++;}
  	}
-	if(parameter == 2){
+	if(parameter == 2)
+	{
+		unsigned char full[]="   FULL BLAST!   ";
 
-	unsigned char full[]="   FULL BLAST!   ";
-
-	if (vi==18){i=0;line(0xd0);
-	while(full[i]!='\0'){dis_data(full[i]);Delay_ms(50);i++;}}
-	else{for (j=0;j<=vi;j++){i=0;line(0xd0);spc(j);
-	while(i<1){dis_data(0xFF);i++;}}
-
-	for (j=vi+1;j<=16;j++){i=0;line(0xd0);spc(j);
-	while(i<1){dis_data(0x20);i++;}}}}}
+		if (vi==18)
+		{
+			i=0;
+			line(0xd0);
+			while(full[i]!='\0')
+			{
+				dis_data(full[i]);i++;
+			}
+		}
+		else
+		{
+			for (j=0;j<=vi;j++)
+			{
+				i=0;
+				line(0xd0);
+				spc(j);
+				while(i<1)
+				{
+					dis_data(0xFF);
+					i++;
+				}
+			}
+	
+			for (j=vi+1;j<=16;j++)
+			{
+				i=0;
+				line(0xd0);
+				spc(j);
+				while(i<1)
+				{
+					dis_data(0x20);
+					i++;
+				}
+			}
+		}
+	}
+}
 
 void fqchng(unsigned int chn)
 {
@@ -1274,8 +1359,70 @@ void Seek_Up(unsigned int up){
 
 	freq(new_chan);
 	fqout();
-
+	LCD_SEG_DISP = new_chan;
+	LCD_SEG_DEC = 1;
     return; 
+}
+
+
+
+/*************************************************************************************
+**	LCDdisplay() is a function that takes an integer value to display and a 1 or 0 for
+**	the display of the decimal place. For example, an input of LCDdisplay(895, 1) would 
+**	be display 89.5 on screen.
+**************************************************************************************/
+void LCDdisplay (int freqInput, int deci)
+{
+	int sz=0;
+	int freq[5] = {0,0,0,0,0};	//The value is placed in here in reverse order, as digits 0 to 9.
+	
+	IntToArray(freqInput, freq, &sz);
+	serial(digit[freq[2]], digit[freq[1]], digit[freq[0]]);
+	if (deci == 1) SEG_DEC = 1;
+		else SEG_DEC = 0;
+	if (freq[sz]==1) 
+	{
+		SEG_ONE = 1;
+	}
+	else
+	{
+		SEG_ONE = 0;
+	}
+}
+
+void serial(char arrA, char arrB, char arrC){
+	int j = 0;
+	unsigned char temp;
+
+	for (j=0;j<8;j++)
+	{
+		temp = ((arrA>>j) & 0x01);
+		SEG_DAT3 = ((arrC>>j) & 0x01);
+		SEG_DAT1 = ((arrA>>j) & 0x01);
+		SEG_DAT2 = ((arrB>>j) & 0x01);
+		
+		SEG_CLK = 0;
+		SEG_CLK = 1;
+	}
+}
+
+/****	Function to take integer input and return the individual***
+*****	digits to an array along with the size of the array of	***
+*****	digits in order to cycle through and use later.		*******/
+
+void IntToArray(int input, int freq[], int *sz){
+	int q = 0, r = 0, i=0;
+	if( input>=1000 ) freq[3] = 1;
+	do{
+		r = input % 10;
+		q = input / 10;
+		input = input / 10;
+		freq[i] = r;
+		i++;
+	}while(i<3);
+//	freq[i]=q;
+
+	*sz = i;
 }
 	
 void main(void) {
@@ -1283,23 +1430,27 @@ void main(void) {
 	unsigned char btn;
 	unsigned char evt;
 	unsigned int ui;
-	
-	TRISD=0;			// Configure Port D as output port
-	LATD=0;
-	
-	dly(2);	Init();lcd_ini();Name_s();
-	if (FMinit() != XS)	gerr = GERFINT,	errfm();
-	volume();FMfrequenc(875);fqout();
-    tune_type = 0;mute_value = 0; 
- 	for (;;) {check_buttons();}}
+	unsigned int rotA=CTRL_ROTA;
+	unsigned int rotB=CTRL_ROTB;
+	unsigned int volChange=0;
+	int Count = 0;
+	dly(30);
+	dly(2);	Init();lcd_ini();
+	Name_s();
+	if (FMinit() != XS)	gerr = GERFINT,
+	errfm();
+	vi = 10;
+	volume();
+	FMfrequenc(977);
+	fqout();
+    tune_type = 0;
+	mute_value = 0; 
+
+	T1CON = 0b00000001;
+
+	for (;;) {
+		check_buttons();
+	}
+}
 
 // end main ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-
-
-
-
-
-
-
-
